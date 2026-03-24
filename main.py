@@ -37,12 +37,18 @@ def start_chat(context=None, output=None):
         with open(output, "w") as f: f.write(history)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Gemini AI Toolset")
-    parser.add_argument("-m", "--models", action="store_true")
-    parser.add_argument("--chat", action="store_true")
-    parser.add_argument("-c", "--context")
-    parser.add_argument("-o", "--output")
-    parser.add_argument("request", nargs='?')
+    parser = argparse.ArgumentParser(
+                        description="Command-line interface for interacting with Google Gemini AI.")
+    parser.add_argument("-m", "--models", action="store_true", 
+                        help="List all available AI models and their supported capabilities.")
+    parser.add_argument("-c", "--chat", action="store_true", 
+                        help="Start an interactive, multi-turn conversation session.")
+    parser.add_argument("-x", "--context", 
+                        help="Path to a file containing system instructions or background context.")
+    parser.add_argument("-o", "--output", 
+                        help="Path to a file where the output or chat history will be saved.")
+    parser.add_argument("request", nargs='?', 
+                        help="The prompt or query to send to the AI for single-shot execution.")
 
     args = parser.parse_args()
 
