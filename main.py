@@ -15,14 +15,16 @@ def get_models(output=None):
         with open(output, "w") as f: f.write(content)
     else: print(content)
 
-def simple_query(req, output=None):
-    res = client.models.generate_content(model=model, contents=req)
+def simple_query(req, context=None, output=None):
+    config = {"system_instruction": context} if context else None
+    res = client.models.generate_content(model=model, contents=req, config=config)
     if output:
         with open(output, "w") as f: f.write(res.text)
     else: print(res.text)
 
-def start_chat(output=None):
-    chat = client.chats.create(model=model)
+def start_chat(context=None, output=None):
+    config = {"system_instruction": context} if context else None
+    chat = client.chats.create(model=model, config=config)
     history = ""
     try:
         while (user_input := input("User: ")).lower() not in ["exit", "quit"]:
@@ -37,15 +39,21 @@ def start_chat(output=None):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Gemini AI Toolset")
     parser.add_argument("-m", "--models", action="store_true")
-    parser.add_argument("-c", "--chat", action="store_true")
+    parser.add_argument("--chat", action="store_true")
+    parser.add_argument("-c", "--context")
     parser.add_argument("-o", "--output")
     parser.add_argument("request", nargs='?')
 
     args = parser.parse_args()
 
+    context_text = None
+    if args.context:
+        with open(args.context, "r", encoding="utf-8") as f:
+            context_text = f.read().strip()
+
     if args.models:
         get_models(args.output)
     elif args.chat:
-        start_chat(args.output)
+        start_chat(context_text, args.output)
     elif args.request:
-        simple_query(args.request, args.output)
+        simple_query(args.request, context_text, args.output)
