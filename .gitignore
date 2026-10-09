@@ -1,2 +1,5 @@
 *.txt
 venv
+.aider*
+__pycache__
+chats
