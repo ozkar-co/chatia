@@ -1,5 +1,12 @@
-*.txt
-venv
-.aider*
-__pycache__
-chats
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.sqlite
+.env
+key.txt
+dist/
+build/
+*.build/
+*.dist/
+*.onefile-build/

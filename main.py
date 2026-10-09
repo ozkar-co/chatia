@@ -1,4 +1,3 @@
-from google import genai
 import argparse
 import re
 import sys
@@ -6,42 +5,12 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from rich.console import Console
-from rich.markdown import Markdown
-from rich.style import Style
+import deepseek
+import paths
+import ui
 
-# Leer API Key
-try:
-    with open("key.txt") as f:
-        apikey = f.read().strip()
-except FileNotFoundError:
-    print("Error: No se encontró el archivo 'key.txt'")
-    sys.exit(1)
-
-client = genai.Client(api_key=apikey)
-model_name = "gemini-flash-latest"
-CHATS_DIR = Path("chats")
-console = Console()
-USER_LABEL = Style(color="cyan", bold=True)
-AI_LABEL = Style(color="green", bold=True)
-
-
-def prompt_user() -> str:
-    console.print()
-    console.print("User: ", style=USER_LABEL, end="")
-    return input().strip()
-
-
-def print_user(text: str) -> None:
-    console.print()
-    console.print("User: ", style=USER_LABEL, end="")
-    console.print(text, style="cyan")
-
-
-def print_ai(text: str) -> None:
-    console.print()
-    console.print("AI: ", style=AI_LABEL, end="")
-    console.print(Markdown(text))
+USER_MARK = "User: "
+AI_MARK = "AI: "
 
 
 def slugify(title: str, max_len: int = 40) -> str:
@@ -62,11 +31,16 @@ def extract_title(text: str) -> str | None:
     return None
 
 
-def new_chat_path() -> Path:
-    CHATS_DIR.mkdir(exist_ok=True)
+def new_chat_path(title: str | None) -> Path:
+    paths.CHATS_DIR.mkdir(parents=True, exist_ok=True)
     date = datetime.now().strftime("%Y%m%d")
-    short_id = uuid.uuid4().hex[:6]
-    return CHATS_DIR / f"{date}-{short_id}.md"
+    stem = f"{date}-{slugify(title)}" if title else f"{date}-{uuid.uuid4().hex[:6]}"
+    path = paths.CHATS_DIR / f"{stem}.md"
+    counter = 2
+    while path.exists():
+        path = paths.CHATS_DIR / f"{stem}-{counter}.md"
+        counter += 1
+    return path
 
 
 def is_auto_name(path: Path) -> bool:
@@ -88,18 +62,18 @@ def maybe_rename_with_title(path: Path, ai_text: str) -> Path:
 
 
 def list_chat_files() -> list[Path]:
-    if not CHATS_DIR.exists():
+    if not paths.CHATS_DIR.exists():
         return []
-    files = [p for p in CHATS_DIR.iterdir() if p.is_file() and not p.name.startswith(".")]
+    files = [p for p in paths.CHATS_DIR.iterdir() if p.is_file() and not p.name.startswith(".")]
     return sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)
 
 
 def list_chats() -> None:
     files = list_chat_files()
     if not files:
-        print(f"No hay chats guardados en '{CHATS_DIR}/'.")
+        print(f"No hay chats guardados en '{paths.CHATS_DIR}'.")
         return
-    print(f"Chats guardados ({CHATS_DIR}/):\n")
+    print(f"Chats guardados ({paths.CHATS_DIR}):\n")
     for i, path in enumerate(files, 1):
         mtime = datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
         print(f"  {i:>3}. {path.name}  ({mtime})")
@@ -129,14 +103,14 @@ def parse_chat_file(path: Path) -> list[tuple[str, str]]:
         current_lines = []
 
     for line in text.splitlines():
-        if line.startswith("User: "):
+        if line.startswith(USER_MARK):
             flush()
             current_role = "user"
-            current_lines = [line[6:]]
-        elif line.startswith("AI: "):
+            current_lines = [line[len(USER_MARK) :]]
+        elif line.startswith(AI_MARK):
             flush()
             current_role = "ai"
-            current_lines = [line[4:]]
+            current_lines = [line[len(AI_MARK) :]]
         elif current_role:
             current_lines.append(line)
         elif line.strip():
@@ -146,58 +120,31 @@ def parse_chat_file(path: Path) -> list[tuple[str, str]]:
     return [(u, a) for u, a in turns if u and a]
 
 
-def build_history(pairs: list[tuple[str, str]]) -> list[dict]:
-    history = []
+def build_messages(context: str | None, pairs: list[tuple[str, str]]) -> list[dict]:
+    messages: list[dict] = []
+    if context:
+        messages.append({"role": "system", "content": context})
     for user_text, ai_text in pairs:
-        history.append({"role": "user", "parts": [{"text": user_text}]})
-        history.append({"role": "model", "parts": [{"text": ai_text}]})
-    return history
+        messages.append({"role": "user", "content": user_text})
+        messages.append({"role": "assistant", "content": ai_text})
+    return messages
 
 
 def append_turn(path: Path, user_input: str, ai_text: str) -> None:
     with path.open("a", encoding="utf-8") as f:
-        f.write(f"User: {user_input}\nAI: {ai_text}\n\n")
+        f.write(f"{USER_MARK}{user_input}\n{AI_MARK}{ai_text}\n\n")
 
 
-def display_history(pairs: list[tuple[str, str]]) -> None:
-    for user_text, ai_text in pairs:
-        print_user(user_text)
-        print_ai(ai_text)
+def start_chat(
+    api_key: str,
+    model: str,
+    context: str | None,
+    chat_file: Path,
+    history_pairs: list[tuple[str, str]] | None = None,
+) -> None:
+    history_pairs = history_pairs or []
+    messages = build_messages(context, history_pairs)
 
-
-def get_models(output=None):
-    try:
-        results = [f"{m.name}:{m.supported_actions}" for m in client.models.list()]
-        content = "\n".join(results)
-        if output:
-            with open(output, "w", encoding="utf-8") as f:
-                f.write(content)
-        else:
-            print(content)
-    except Exception as e:
-        print(f"\n[ERROR API]: {e}")
-
-
-def simple_query(req, context=None, output=None):
-    try:
-        config = {"system_instruction": context} if context else None
-        res = client.models.generate_content(model=model_name, contents=req, config=config)
-        if output:
-            with open(output, "w", encoding="utf-8") as f:
-                f.write(res.text)
-        else:
-            print_user(req)
-            print_ai(res.text)
-    except Exception as e:
-        print(f"\n[ERROR API]: {e}")
-
-
-def start_chat(context=None, output_path: Path | None = None, history_pairs: list[tuple[str, str]] | None = None):
-    config = {"system_instruction": context} if context else None
-    history = build_history(history_pairs) if history_pairs else []
-    chat = client.chats.create(model=model_name, config=config, history=history)
-
-    chat_file = output_path or new_chat_path()
     chat_file.parent.mkdir(parents=True, exist_ok=True)
     if history_pairs and not chat_file.exists():
         for user_text, ai_text in history_pairs:
@@ -205,29 +152,34 @@ def start_chat(context=None, output_path: Path | None = None, history_pairs: lis
 
     turns_saved = 0
     if history_pairs:
-        print(f"--- Chat reanudado ({chat_file.name}, {len(history_pairs)} turnos) ---")
-        display_history(history_pairs)
+        print(ui.info(f"--- Chat reanudado ({chat_file.name}, {len(history_pairs)} turnos) ---"))
+        for user_text, ai_text in history_pairs:
+            ui.print_user(user_text)
+            ui.print_ai(ai_text)
     else:
-        print(f"--- Chat iniciado ({chat_file.name}, escribe 'exit' para salir) ---")
+        print(ui.info(f"--- Chat iniciado ({chat_file.name}, escribe 'exit' para salir) ---"))
 
     try:
         while True:
-            user_input = prompt_user()
+            user_input = ui.prompt_user()
             if not user_input:
                 continue
-            if user_input.lower() in ["exit", "quit"]:
+            if user_input.lower() in ("exit", "quit"):
                 break
 
+            messages.append({"role": "user", "content": user_input})
             try:
-                res = chat.send_message(user_input)
-                full_text = res.text
-                print_ai(full_text)
-                append_turn(chat_file, user_input, full_text)
-                turns_saved += 1
-                chat_file = maybe_rename_with_title(chat_file, full_text)
-            except Exception as e:
-                print(f"\n[ERROR API]: {e}")
+                full_text = ui.print_ai_stream(deepseek.stream(api_key, model, messages))
+            except deepseek.DeepSeekError as error:
+                print(ui.error(f"\n[ERROR API] {error}"))
+                messages.pop()
                 print("Puedes intentar escribir de nuevo...")
+                continue
+
+            messages.append({"role": "assistant", "content": full_text})
+            append_turn(chat_file, user_input, full_text)
+            turns_saved += 1
+            chat_file = maybe_rename_with_title(chat_file, full_text)
 
     except (EOFError, KeyboardInterrupt):
         print("\nChat interrumpido por el usuario.")
@@ -241,9 +193,15 @@ def start_chat(context=None, output_path: Path | None = None, history_pairs: lis
         print(" (sin mensajes guardados)")
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Command-line interface for Gemini AI.")
-    parser.add_argument("-m", "--models", action="store_true", help="Listar modelos disponibles")
+def main() -> None:
+    parser = argparse.ArgumentParser(prog="chatia", description="Chat de terminal con DeepSeek.")
+    parser.add_argument(
+        "-m",
+        "--model",
+        choices=sorted(deepseek.MODELS),
+        default="flash",
+        help="Modelo a usar: flash (por defecto) o pro",
+    )
     parser.add_argument("-l", "--list", action="store_true", help="Listar chats guardados")
     parser.add_argument(
         "-n",
@@ -252,43 +210,48 @@ if __name__ == "__main__":
         metavar="N",
         help="Continuar el chat número N (ver --list)",
     )
-    parser.add_argument("-c", "--chat", action="store_true", help="Iniciar chat (por defecto sin argumentos)")
-    parser.add_argument("-x", "--context", help="Archivo de contexto / system instruction")
-    parser.add_argument("-o", "--output", help="Ruta de guardado (por defecto: chats/YYYYMMDD-titulo.md)")
-    parser.add_argument("request", nargs="?", help="Consulta única (sin entrar al modo chat)")
-
+    parser.add_argument("-x", "--context", metavar="ARCHIVO", help="Archivo de contexto (system instruction)")
+    parser.add_argument("-o", "--output", metavar="TITULO", help="Título del chat (opcional)")
     args = parser.parse_args()
+
+    if args.list:
+        list_chats()
+        return
 
     context_text = None
     if args.context:
-        try:
-            with open(args.context, "r", encoding="utf-8") as f:
-                context_text = f.read().strip()
-        except Exception as e:
-            print(f"Error leyendo el contexto: {e}")
+        context_path = Path(args.context)
+        if not context_path.is_file():
+            print(ui.error(f"Error: no existe el archivo de contexto '{args.context}'"), file=sys.stderr)
             sys.exit(1)
+        context_text = context_path.read_text(encoding="utf-8").strip()
 
-    output_path = Path(args.output) if args.output else None
+    api_key = paths.load_api_key()
+    model = deepseek.MODELS[args.model]
 
-    if args.models:
-        get_models(args.output)
-    elif args.list:
-        list_chats()
-    elif args.continue_chat is not None:
+    if args.continue_chat is not None:
         files = list_chat_files()
         if not files:
-            print(f"No hay chats guardados en '{CHATS_DIR}/'.")
+            print(ui.error(f"No hay chats guardados en '{paths.CHATS_DIR}'."), file=sys.stderr)
             sys.exit(1)
         if args.continue_chat < 1 or args.continue_chat > len(files):
-            print(f"Número inválido. Usa --list para ver chats del 1 al {len(files)}.")
+            print(
+                ui.error(f"Número inválido. Usa --list para ver chats del 1 al {len(files)}."),
+                file=sys.stderr,
+            )
             sys.exit(1)
         chat_path = files[args.continue_chat - 1]
         history_pairs = parse_chat_file(chat_path)
         if not history_pairs:
-            print(f"El archivo '{chat_path.name}' no tiene turnos válidos para reanudar.")
+            print(
+                ui.error(f"El archivo '{chat_path.name}' no tiene turnos válidos para reanudar."),
+                file=sys.stderr,
+            )
             sys.exit(1)
-        start_chat(context_text, chat_path, history_pairs)
-    elif args.request:
-        simple_query(args.request, context_text, args.output)
+        start_chat(api_key, model, context_text, chat_path, history_pairs)
     else:
-        start_chat(context_text, output_path)
+        start_chat(api_key, model, context_text, new_chat_path(args.output))
+
+
+if __name__ == "__main__":
+    main()
